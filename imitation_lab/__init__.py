@@ -1,1 +1,1 @@
-"""Evidence-preserving NexArm imitation learning tools."""
+"""NexArm dataset conversion, ACT training and robot evaluation."""
