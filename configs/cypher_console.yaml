@@ -14,3 +14,4 @@ limits:
   gripper_step_ticks: 32
   gripper_travel_ticks: 60
 completion_tolerance_ticks: 10
+backend: bridge

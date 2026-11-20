@@ -67,7 +67,13 @@ def main():
                 values[label] = reply
                 if reply and len(reply["payload"]) == length:
                     reply["value"] = struct.unpack(fmt, bytes(reply["payload"]))[0]
-            for label, command in (("overload", 71), ("max_torque", 75), ("angle_limits", 77)):
+            for label, command in (
+                ("pid", 60),
+                ("offset", 58),
+                ("overload", 71),
+                ("max_torque", 75),
+                ("angle_limits", 77),
+            ):
                 values[label] = query(255, command, bytes([servo_id]))
             report["servos"][str(servo_id)] = values
             print(json.dumps({"servo_id": servo_id, **values}), flush=True)

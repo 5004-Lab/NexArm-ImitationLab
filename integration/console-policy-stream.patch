@@ -1,8 +1,20 @@
 diff --git a/nexarm/server.py b/nexarm/server.py
-index 74b4e89..d095c32 100644
+index 74b4e89..432a0ec 100644
 --- a/nexarm/server.py
 +++ b/nexarm/server.py
-@@ -133,6 +133,7 @@ class Controller:
+@@ -87,6 +87,11 @@ def bridge_move(positions):
+     return packet(BRIDGE_WRITE, struct.pack("<6h", *positions))
+ 
+ 
++def normal_move(positions, duration=400):
++    # Official SDK sync_write_servos: six native positions followed by time_ms.
++    return packet(70, struct.pack("<6hH", *positions, duration))
++
++
+ def download_frame(group, total, index, frame, actual):
+     servos = frame["servos"]
+     duration = frame["time"]
+@@ -133,6 +138,7 @@ class Controller:
          self.board = None
          self.group_times = {}
          self.group_frames = {}
@@ -10,7 +22,7 @@ index 74b4e89..d095c32 100644
          self.result = None
          self.log_id = 0
          self.logs = deque(maxlen=1800)
-@@ -200,7 +201,7 @@ class Controller:
+@@ -200,7 +206,7 @@ class Controller:
                      "loop": task["loop"],
                  },
                  "settling": now < self.in_flight_until,
@@ -19,15 +31,22 @@ index 74b4e89..d095c32 100644
                  "motion_phase": None if motion is None or motion["xyz"] is None else {
                      "name": "按实测位置重新规划" if motion["replan"] else motion["phases"][motion["phase_index"]]["name"],
                      "index": motion["phase_index"] + 1,
-@@ -230,6 +231,7 @@ class Controller:
-             self.pending.append((bridge_move(self.positions()), 0, None, None))
+@@ -226,10 +232,12 @@ class Controller:
+ 
+     def hold(self, now):
+         self.pending.clear()
+-        if self.moving and self.bridge_ready and self.feedback_ok(now):
+-            self.pending.append((bridge_move(self.positions()), 0, None, None))
++        if self.moving and self.feedback_ok(now):
++            hold = bridge_move(self.positions()) if self.bridge_ready else normal_move(self.positions(), 100)
++            self.pending.append((hold, 0, None, None))
          self.moving.clear()
          self.motion = None
 +        self.policy_stream = None
          self.task = None
          self.in_flight_until = 0
  
-@@ -265,13 +267,14 @@ class Controller:
+@@ -265,13 +273,14 @@ class Controller:
          motion.update(target=target, origin=start, cursor=0.0, command=None,
                        sent_at=None, phase_started=None, sampled_feedback=None)
  
@@ -43,7 +62,7 @@ index 74b4e89..d095c32 100644
              "xyz": xyz, "replan": None, "replans": 0,
              "preferred_speed": max(abs(a - b) for a, b in zip(start, target)) * 1000 / duration if duration else None,
          }
-@@ -343,7 +346,25 @@ class Controller:
+@@ -343,7 +352,32 @@ class Controller:
                  return {}
              if not self.feedback_ok(now) or not self.power_ok(now):
                  raise ValueError("反馈或电压不可用")
@@ -54,13 +73,20 @@ index 74b4e89..d095c32 100644
 +                angles = data.get("angles")
 +                if not isinstance(angles, list) or len(angles) != 6:
 +                    raise ValueError("策略需要六轴目标")
++                backend = data.get("backend", "bridge")
++                if backend not in ("bridge", "normal_sync"):
++                    raise ValueError("未知的策略执行协议")
++                if backend == "normal_sync" and self.bridge_started is not None:
++                    raise ValueError("请先恢复常规协议模式")
++                if self.policy_stream and self.policy_stream["backend"] != backend:
++                    raise ValueError("请停止当前策略后再切换执行协议")
 +                actual = self.positions()
 +                goal = [kinematics.position_for_angle(i, a) for i, a in enumerate(angles)]
 +                if max(abs(a - b) for a, b in zip(actual, goal)) > 55:
 +                    raise ValueError("策略单步目标距离实测位置不能超过 55 编码器单位")
 +                kinematics.check_path(actual, goal, kinematics.joint_limits(actual))
 +                if self.policy_stream is None:
-+                    self.policy_stream = {"progress": actual[:], "progress_at": [now] * 6,
++                    self.policy_stream = {"backend": backend, "progress": actual[:], "progress_at": [now] * 6,
 +                                          "sampled_feedback": None, "command": None,
 +                                          "torque_ready_at": None, "params_sent": False}
 +                self.policy_stream.update(goal=goal, expires=now + 0.8)
@@ -70,7 +96,7 @@ index 74b4e89..d095c32 100644
                  raise ValueError("请等待当前操作完成，或按停止")
              self.limits = kinematics.joint_limits(self.positions())
              if action == "move-target":
-@@ -376,7 +397,8 @@ class Controller:
+@@ -376,7 +410,8 @@ class Controller:
                  for i, value in enumerate(angles):
                      if value is not None:
                          target[i] = kinematics.position_for_angle(i, value)
@@ -80,7 +106,20 @@ index 74b4e89..d095c32 100644
                  self.message("关节路径检查通过，开始运动")
                  return {}
              if action == "torque":
-@@ -589,7 +611,7 @@ class Controller:
+@@ -456,10 +491,10 @@ class Controller:
+ 
+     def transmit(self, link, frame):
+         link.write(frame)
+-        if frame[4] == BRIDGE_WRITE and len(frame) == 18:
++        if (frame[4] == BRIDGE_WRITE and len(frame) == 18) or (frame[4] == 70 and len(frame) == 20):
+             task = self.task or {}
+             recording = task.get("capture") if task.get("capture_ready") else None
+-            self.commands.append((time.monotonic(), struct.unpack("<6h", frame[5:-1]), recording, task.get("loop")))
++            self.commands.append((time.monotonic(), struct.unpack("<6h", frame[5:17]), recording, task.get("loop")))
+         self.log("hex", f"[TX] {frame.hex(' ').upper()}")
+ 
+     def update_feedback(self, joints, now):
+@@ -589,7 +624,7 @@ class Controller:
          largest = max(remaining)
          settled = not self.velocity or max(map(abs, self.velocity)) <= 3.0
          tcp_error = math.dist(kinematics.tcp(actual), xyz) if xyz is not None and final else None
@@ -89,7 +128,7 @@ index 74b4e89..d095c32 100644
          if final and reached and (motion["command"] is None or (motion["command"] == goal and settled)):
              if motion["command"] is not None and largest > 5:
                  self.transmit(link, bridge_move(actual))
-@@ -623,6 +645,9 @@ class Controller:
+@@ -623,6 +658,9 @@ class Controller:
              return
          if motion["torque_ready_at"] is None:
              if any(value is not True for value in self.torque):
@@ -99,7 +138,7 @@ index 74b4e89..d095c32 100644
                  self.transmit(link, packet(BRIDGE_TORQUE, b"\x01"))
                  self.torque[:] = [True] * 6
                  motion["torque_ready_at"] = now + 0.05
-@@ -687,6 +712,60 @@ class Controller:
+@@ -687,6 +725,62 @@ class Controller:
          self.in_flight_until = now + 0.25
          self.moving.update(i + 1 for i, (a, b) in enumerate(zip(actual, command)) if a != b)
  
@@ -110,12 +149,13 @@ index 74b4e89..d095c32 100644
 +            return
 +        if stream["sampled_feedback"] == self.last_feedback:
 +            return
-+        if self.bridge_started is None:
++        bridge = stream["backend"] == "bridge"
++        if bridge and self.bridge_started is None:
 +            self.transmit(link, packet(BRIDGE_MODE, b"\x01"))
 +            self.bridge_started = now
 +            self.bridge_reference = self.feedback[:]
 +            return
-+        if not self.bridge_ready:
++        if bridge and not self.bridge_ready:
 +            return
 +        actual, goal = self.positions(), stream["goal"]
 +        bounds = kinematics.joint_limits(actual)
@@ -124,12 +164,13 @@ index 74b4e89..d095c32 100644
 +        goal = [max(lo, min(hi, p)) for p, (lo, hi) in zip(goal, bounds)]
 +        stream["goal"] = goal
 +        if not stream["params_sent"]:
-+            self.transmit(link, packet(BRIDGE_PARAMS, struct.pack("<BH", 75, 165)))
++            if bridge:
++                self.transmit(link, packet(BRIDGE_PARAMS, struct.pack("<BH", 75, 165)))
 +            stream["params_sent"] = True
 +        if stream["torque_ready_at"] is None:
 +            if any(value is not True for value in self.torque):
-+                self.transmit(link, bridge_move(actual))
-+                self.transmit(link, packet(BRIDGE_TORQUE, b"\x01"))
++                self.transmit(link, bridge_move(actual) if bridge else normal_move(actual, 100))
++                self.transmit(link, packet(BRIDGE_TORQUE if bridge else TORQUE, b"\x01"))
 +                self.torque[:] = [True] * 6
 +                stream["torque_ready_at"] = now + 0.05
 +                return
@@ -153,14 +194,14 @@ index 74b4e89..d095c32 100644
 +            self.stop(now, True, f"ACT 实测路径检查失败：{error}")
 +            return
 +        if goal != stream["command"]:
-+            self.transmit(link, bridge_move(goal))
++            self.transmit(link, bridge_move(goal) if bridge else normal_move(goal))
 +            stream["command"] = goal[:]
 +            self.moving.update(i + 1 for i, (a, b) in enumerate(zip(actual, goal)) if a != b)
 +
      def tick(self, link, now):
          if self.board_stop_pending:
              self.transmit(link, packet(GROUP_STOP))
-@@ -712,6 +791,9 @@ class Controller:
+@@ -712,6 +806,9 @@ class Controller:
                      self.torque[device - 1] = torque
          if self.pending or self.owner is None:
              return
@@ -170,6 +211,77 @@ index 74b4e89..d095c32 100644
          if self.motion:
              self.tick_motion(link, now)
              return
+@@ -834,7 +931,7 @@ class ConsoleHTTPServer(ThreadingHTTPServer):
+     request_queue_size = 64
+ 
+ 
+-def application(controller, origin, camera, view_password=None, recorder=None, external_camera=None, history=None, depth_camera=None, episodes=None):
++def application(controller, origin, camera, view_password=None, recorder=None, external_camera=None, history=None, depth_camera=None, episodes=None, read_only=False):
+     key = secrets.token_urlsafe(32)
+     viewing = view_password is not None
+     authorization = "Basic " + base64.b64encode(f"nexarm:{view_password}".encode()).decode() if viewing else ""
+@@ -999,6 +1096,7 @@ def application(controller, origin, camera, view_password=None, recorder=None, e
+                 self.camera_frame(depth_camera, with_pose=False, color=True)
+             elif self.path == "/api/state":
+                 state = controller.snapshot(None if viewing else self.client())
++                state["read_only"] = read_only or viewing
+                 if viewing:
+                     state["remote_view"] = True
+                 self.response(state)
+@@ -1065,9 +1163,9 @@ def application(controller, origin, camera, view_password=None, recorder=None, e
+                 self.response({"error": str(exc)}, 404 if isinstance(exc, FileNotFoundError) else 409)
+ 
+         def do_POST(self):
+-            if viewing:
++            if viewing or read_only:
+                 self.close_connection = True
+-                self.response({"error": "局域网页面仅供查看"}, 403)
++                self.response({"error": "只读服务未启用运动入口" if read_only else "局域网页面仅供查看"}, 403)
+                 return
+             client = self.client()
+             if (not self.allowed_host() or self.headers.get("Origin") != origin or client is None
+@@ -1119,6 +1217,7 @@ def application(controller, origin, camera, view_password=None, recorder=None, e
+ 
+ def main():
+     parser = argparse.ArgumentParser()
++    parser.add_argument("--read-only", action="store_true", help="GET observations only; all POST controls disabled")
+     parser.add_argument("--port", type=int, default=8765, help="loopback HTTP port")
+     parser.add_argument("--device", help="NexArm serial device when more than one is present")
+     parser.add_argument("--camera-device", help="Name or UID of the robot arm USB camera")
+@@ -1151,7 +1250,7 @@ def main():
+     episode_worker = threading.Thread(target=episodes.run, daemon=True)
+     episode_worker.start()
+     origin = f"http://127.0.0.1:{args.port}"
+-    server = ConsoleHTTPServer(("127.0.0.1", args.port), application(controller, origin, camera, recorder=recorder, external_camera=external_camera, history=history, depth_camera=depth_camera, episodes=episodes))
++    server = ConsoleHTTPServer(("127.0.0.1", args.port), application(controller, origin, camera, recorder=recorder, external_camera=external_camera, history=history, depth_camera=depth_camera, episodes=episodes, read_only=args.read_only))
+     lan_thread = None
+     if args.lan_host:
+         lan_origin = f"http://{args.lan_host}:{args.port}"
+diff --git a/tests/test_camera_http.py b/tests/test_camera_http.py
+index 4fd330d..25dcad2 100644
+--- a/tests/test_camera_http.py
++++ b/tests/test_camera_http.py
+@@ -82,6 +82,20 @@ class CameraHTTPTest(unittest.TestCase):
+         authorization = "Basic " + base64.b64encode(b"nexarm:test-password-long").decode()
+         self.assertEqual(self.get(server, "/api/camera/external", {"Authorization": authorization})[0], 200)
+ 
++    def test_read_only_service_serves_images_but_rejects_motion(self):
++        server = ConsoleHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
++        server.RequestHandlerClass = application(
++            self.controller, f"http://127.0.0.1:{server.server_port}", self.wrist,
++            read_only=True)
++        self.start(server)
++        self.assertEqual(self.get(server, "/api/camera")[0], 200)
++        with closing(HTTPConnection("127.0.0.1", server.server_port, timeout=3)) as connection:
++            connection.request("POST", "/api/arm", body="{}",
++                               headers={"Content-Type": "application/json"})
++            response = connection.getresponse()
++            self.assertEqual(response.status, 403)
++            self.assertIn("只读", json.loads(response.read())["error"])
++
+     def test_control_gateway_relays_external_camera(self):
+         upstream = self.server()
+         gateway = GatewayServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
 diff --git a/tests/test_motion.py b/tests/test_motion.py
 index eabc752..ec31e21 100644
 --- a/tests/test_motion.py
@@ -214,12 +326,13 @@ index eabc752..ec31e21 100644
          goal = self.start.copy()
 diff --git a/tests/test_policy_stream.py b/tests/test_policy_stream.py
 new file mode 100644
-index 0000000..f13f104
+index 0000000..0855e28
 --- /dev/null
 +++ b/tests/test_policy_stream.py
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,136 @@
 +"""Exercise the policy stream against a simulated servo plant, never serial hardware."""
 +
++import struct
 +import time
 +import unittest
 +from unittest.mock import patch
@@ -246,10 +359,10 @@ index 0000000..f13f104
 +        plant.update(controller, now)
 +        return controller, plant, now
 +
-+    def send(self, controller, goal, now):
++    def send(self, controller, goal, now, backend="bridge"):
 +        with patch("nexarm.server.time.monotonic", return_value=now):
 +            controller.act("policy-step", "policy-test", {
-+                "angles": [kinematics.angle(i, p) for i, p in enumerate(goal)]})
++                "angles": [kinematics.angle(i, p) for i, p in enumerate(goal)], "backend": backend})
 +
 +    def test_targets_can_update_before_previous_target_settles(self):
 +        controller, plant, now = self.setup_controller()
@@ -304,6 +417,46 @@ index 0000000..f13f104
 +        self.assertIsNotNone(controller.policy_stream)
 +        self.assertEqual(controller.policy_stream["goal"][1], 3027)
 +        self.assertEqual(plant.sent[-1][1][1], 3027)
++
++    def test_normal_sync_protocol_keeps_normal_mode_and_records_actual_commands(self):
++        controller, _, now = self.setup_controller()
++        controller.bridge_started = None
++        controller.bridge_ready = False
++        controller.last_voltage = now
++
++        class NormalPlant(Plant):
++            def __init__(self, positions):
++                super().__init__(positions)
++                self.codes = []
++
++            def write(self, frame):
++                self.codes.append(frame[4])
++                if frame[4] == 70:
++                    self.command = list(struct.unpack("<6h", frame[5:17]))
++                    self.sent.append((self.now, self.command))
++                    self.duration = struct.unpack("<H", frame[17:19])[0]
++
++        plant = NormalPlant(self.start)
++        plant.update(controller, now)
++        goal = self.start.copy()
++        goal[2] += 20
++        self.send(controller, goal, now, backend="normal_sync")
++        controller.tick_policy(plant, now)
++        self.assertNotIn(68, plant.codes)
++        self.assertEqual(plant.command, goal)
++        self.assertEqual(plant.duration, 400)
++        self.assertEqual(controller.commands[-1][1], tuple(goal))
++        controller.hold(now)
++        self.assertIsNone(controller.policy_stream)
++        self.assertEqual(controller.pending[0][0][4], 70)
++        self.assertEqual(list(struct.unpack("<6h", controller.pending[0][0][5:17])), self.start)
++
++    def test_normal_protocol_rejects_existing_bridge_mode(self):
++        controller, plant, now = self.setup_controller()
++        with self.assertRaisesRegex(ValueError, "常规协议"):
++            self.send(controller, self.start, now, backend="normal_sync")
++        self.assertIsNone(controller.policy_stream)
++        self.assertFalse(plant.sent)
 +
 +    def test_far_target_is_rejected_before_motion(self):
 +        controller, plant, now = self.setup_controller()

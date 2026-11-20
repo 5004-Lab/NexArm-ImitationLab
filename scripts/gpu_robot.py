@@ -43,8 +43,15 @@ def main():
 names=['J1 base','J2 shoulder','J3 ELBOW','J4 wrist pitch','J5 wrist roll','J6 gripper']
 i=0
 while {samples} == 0 or i < {samples}:
- with urllib.request.urlopen('http://127.0.0.1:8765/api/state',timeout=3) as r:s=json.load(r)
- print(time.strftime('%H:%M:%S'),'connected=',s['connected'],'moving=',s['moving'],flush=True)
+ try:
+  with urllib.request.urlopen('http://127.0.0.1:8765/api/state',timeout=3) as r:s=json.load(r)
+ except OSError as error:
+  import subprocess
+  service=subprocess.run(['systemctl','--user','is-active','nexarm-console.service'],capture_output=True,text=True)
+  print('SSH connected; robot console 127.0.0.1:8765 is unavailable. service='+service.stdout.strip(),flush=True)
+  print(str(error),flush=True)
+  raise SystemExit(2)
+ print(time.strftime('%H:%M:%S'),'connected=',s['connected'],'moving=',s['moving'],'read_only=',s.get('read_only',False),flush=True)
  if s['feedback']:
   for n,p,a in zip(names,s['feedback'],s['angles']):print('%-15s ticks=%4d  angle=%7.2f deg'%(n,p[0],a),flush=True)
  print('controller:',s['result'],flush=True)

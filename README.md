@@ -2,7 +2,9 @@
 
 ## GPU 服务器直接操作
 
-完整可运行命令见 [GPU 操作与真机 ACT 联调](docs/GPU_COMMANDS.md)。
+完整命令见 [GPU 操作与真机 ACT 联调](docs/GPU_COMMANDS.md)，实际验收见 [真机测试记录](docs/ACT_HARDWARE_RESULTS.md)。
+
+当前只读观察已恢复，`--watch` 可用；动作启动被工具自动审批拦截，`read_only=True` 时不能执行运动。此前连续测试完成 6/8 轮后因 J3 无进展停止，尚未完整跑通。
 
 ```bash
 source /home/wangji/miniconda3/etc/profile.d/conda.sh

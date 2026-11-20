@@ -225,7 +225,13 @@ def deploy(config_path, output, cycles=8, execute=False, stop_file="STOP"):
                     )
                     log.write(json.dumps({**record, "event": "command"}) + "\n")
                     log.flush()
-                    console.command("policy-step", {"angles": encoder_angles(target, joints)})
+                    console.command(
+                        "policy-step",
+                        {
+                            "angles": encoder_angles(target, joints),
+                            "backend": config.get("backend", "bridge"),
+                        },
+                    )
                     summary["commands_sent"] += 1
                     time.sleep(max(0.10, 1 / config["fps"] - (time.monotonic() - started_at)))
                     state = checked_state(console, lease)

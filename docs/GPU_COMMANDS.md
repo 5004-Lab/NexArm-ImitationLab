@@ -1,6 +1,6 @@
 # GPU 服务器命令与真机 ACT 联调
 
-**当前验收：GPU 已发起真机连续动作；8 轮测试完成 6 轮后，J3 无进展触发停机。完整连续验收尚未通过。**
+**当前部署：只读状态接口已恢复，GPU 的 `--watch` 已实测可用，显示 `read_only=True`。完整运动服务启动被自动审批拦截；当前不能发送动作。此前 8 轮桥接测试完成 6 轮后，J3 无进展停机，完整连续验收尚未通过。**
 
 ## 登录并激活环境
 
@@ -23,7 +23,10 @@ python scripts/gpu_robot.py --status
 python scripts/gpu_robot.py --watch
 ```
 
-`--watch` 每秒打印六轴真实编码器和控制台角度，Ctrl+C 结束查看。
+`--watch` 每秒打印六轴真实编码器、控制台角度及 `read_only`，Ctrl+C 结束查看。
+若机器人端 8765 未监听，命令会打印服务状态并退出，不再触发系统 Apport 异常。
+目前提供状态的是临时 GET-only 观察进程；`nexarm-console.service` 保持未启动。PID 记录在机器人 `outputs/read-only-console.pid`。
+只读模式拒绝全部 POST 请求，`--execute` 无法启用运动。
 `J3 ELBOW` 是肘关节。显示 connected=True 才代表有实时反馈；controller 一行可能保留上次停止原因。
 
 ## 已下载 ACT：先看实时预测，再执行
@@ -38,7 +41,7 @@ python scripts/gpu_robot.py --shadow --cycles 20
 实时画面与预测：<http://10.206.95.245:8788/>。表格“当前反馈”是实际编码器，“预测目标”是模型建议，顶部显示当前模式。
 上述命令不会发送运动目标。推理权重是 `data/models/cypher_nexarm_act`，来源为 [CypherChen/NexarmControlModel](https://huggingface.co/CypherChen/NexarmControlModel)。
 
-以下命令会真实运动，先确认现场人员已松手、其他控制已暂停，并让机械臂处于展开抬起的姿态：
+以下是完整控制服务恢复且现场就绪后的执行入口；当前只读部署会拒绝启用运动：
 
 ```bash
 python scripts/gpu_robot.py --execute --cycles 8
@@ -129,7 +132,10 @@ git -C /home/ztl/nexarm-console apply \
   /home/ztl/NexArm-ImitationLab/integration/console-policy-stream.patch
 ```
 
-已安装的机器无需重复应用。控制台处于桥接模式时重启，固件 1.0.2 可能无法恢复常规反馈；需要断开控制板 USB 与机械臂电源再重新上电，期间扶稳机械臂，避免失去扭矩后下落。
+已安装的机器无需重复应用。该面板的 KEY1、KEY2 是功能键，面板没有 EN/RST 键。固件 1.0.2 的桥接模式退出存在恢复问题；本次已通过标准 USB EN 复位恢复常规协议，未刷写固件。
+
+`configs/cypher_normal_sync.yaml` 是新增的官方常规同步写入协议配置，使用命令 70，已通过模拟控制器测试，尚未完成实机验证，也没有作为默认配置激活。
+默认 `configs/cypher_console.yaml` 保留桥接协议。当前运动启动被自动审批阻止，工具仅返回 `blocked by policy`，未提供进一步理由。
 
 GPU 侧软件检查：
 
