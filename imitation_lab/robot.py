@@ -4,6 +4,7 @@ import io
 import json
 import math
 import time
+import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
@@ -30,8 +31,11 @@ class Console:
             headers=headers,
             data=json.dumps(data).encode() if data is not None else None,
         )
-        with urllib.request.urlopen(req, timeout=5) as response:
-            return response.read()
+        try:
+            with urllib.request.urlopen(req, timeout=5) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f"Console {path} HTTP {error.code}: {error.read().decode()}") from error
 
     def state(self):
         return json.loads(self.request("/api/state"))

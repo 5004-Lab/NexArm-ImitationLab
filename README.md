@@ -1,5 +1,22 @@
 # NexArm-ImitationLab
 
+## GPU 服务器直接操作
+
+完整可运行命令见 [GPU 操作与真机 ACT 联调](docs/GPU_COMMANDS.md)。
+
+```bash
+source /home/wangji/miniconda3/etc/profile.d/conda.sh
+conda activate /usr/local/cuda/envs/nexarm-il
+cd /mnt/disk_2T/wangji/projects/NexArm-ImitationLab
+python scripts/gpu_robot.py --status
+python scripts/gpu_robot.py --watch
+python scripts/gpu_robot.py --shadow --cycles 20
+```
+
+真机启动：`python scripts/gpu_robot.py --execute --cycles 8`。停止：`python scripts/gpu_robot.py --stop`。
+执行命令会真实运动；推理使用 GPU，机器人端处理相机、串口和路径检查。当前是单步约 3°、总行程 6° 的联调，不代表已完成抓取验证。
+
+
 NexArm 数据转换、ACT / BC-MLP / Diffusion Policy 训练与离线推理工程。训练在 GPU 服务器执行，采集与真实机械臂控制留在机器人服务器。
 
 ## 常用命令速查（当前服务器可直接运行）

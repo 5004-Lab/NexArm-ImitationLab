@@ -1,0 +1,16 @@
+# Native NexArm follower tick order: USB bridge IDs 1..6, no leader mirroring.
+console_root: /home/ztl/nexarm-console
+console_url: http://127.0.0.1:8765
+policy_url: http://10.206.58.217:8790
+preview_dir: outputs/live_preview
+axes: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]
+cameras:
+  observation.images.front: third
+  observation.images.wrist: wrist
+fps: 5
+limits:
+  step_deg: 3.0
+  travel_deg: 6
+  gripper_step_ticks: 32
+  gripper_travel_ticks: 60
+completion_tolerance_ticks: 10

@@ -64,6 +64,12 @@ def main(argv=None):
     rollout.add_argument(
         "--preview-dir", help="Write live images and JSON for the read-only preview page"
     )
+    deploy = commands.add_parser("deploy-act", help="Native ACT GPU inference and console execution")
+    deploy.add_argument("--config", default="configs/cypher_console.yaml")
+    deploy.add_argument("--output", required=True)
+    deploy.add_argument("--cycles", type=int, default=8)
+    deploy.add_argument("--execute", action="store_true")
+    deploy.add_argument("--stop-file", default="STOP")
     trials = commands.add_parser("trials", help="Summarize real robot trials")
     trials.add_argument("csv")
     public = commands.add_parser("import-public", help="Import a local native LeRobot dataset")
@@ -115,6 +121,10 @@ def main(argv=None):
             from .evaluate import evaluate
 
             result = evaluate(args.dataset, args.checkpoint, args.output, args.split, args.device)
+        elif args.command == "deploy-act":
+            from .native_deploy import deploy
+
+            result = deploy(args.config, args.output, args.cycles, args.execute, args.stop_file)
         elif args.command == "rollout":
             from .robot import rollout
 
@@ -133,7 +143,7 @@ def main(argv=None):
             from .evaluate import summarize_trials
 
             result = summarize_trials(args.csv)
-    except (ValueError, FileNotFoundError) as error:
+    except (ValueError, FileNotFoundError, RuntimeError) as error:
         parser.exit(2, str(error) + "\n")
     if result is not None:
         print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -1,0 +1,315 @@
+diff --git a/nexarm/server.py b/nexarm/server.py
+index 74b4e89..d095c32 100644
+--- a/nexarm/server.py
++++ b/nexarm/server.py
+@@ -133,6 +133,7 @@ class Controller:
+         self.board = None
+         self.group_times = {}
+         self.group_frames = {}
++        self.policy_stream = None
+         self.result = None
+         self.log_id = 0
+         self.logs = deque(maxlen=1800)
+@@ -200,7 +201,7 @@ class Controller:
+                     "loop": task["loop"],
+                 },
+                 "settling": now < self.in_flight_until,
+-                "moving": motion is not None or now < self.in_flight_until,
++                "moving": motion is not None or self.policy_stream is not None or now < self.in_flight_until,
+                 "motion_phase": None if motion is None or motion["xyz"] is None else {
+                     "name": "按实测位置重新规划" if motion["replan"] else motion["phases"][motion["phase_index"]]["name"],
+                     "index": motion["phase_index"] + 1,
+@@ -230,6 +231,7 @@ class Controller:
+             self.pending.append((bridge_move(self.positions()), 0, None, None))
+         self.moving.clear()
+         self.motion = None
++        self.policy_stream = None
+         self.task = None
+         self.in_flight_until = 0
+ 
+@@ -265,13 +267,14 @@ class Controller:
+         motion.update(target=target, origin=start, cursor=0.0, command=None,
+                       sent_at=None, phase_started=None, sampled_feedback=None)
+ 
+-    def begin_motion(self, target, duration, label, xyz=None, phases=None):
++    def begin_motion(self, target, duration, label, xyz=None, phases=None, tolerance_ticks=5):
+         start = self.positions()
+         bounds = kinematics.joint_limits(start)
+         stages = phases or [{"name": label, "positions": target}]
+         kinematics.check_path(start, stages[0]["positions"], bounds)
+         self.motion = {
+             "label": label, "bounds": bounds, "torque_ready_at": None,
++            "tolerance_ticks": tolerance_ticks,
+             "xyz": xyz, "replan": None, "replans": 0,
+             "preferred_speed": max(abs(a - b) for a, b in zip(start, target)) * 1000 / duration if duration else None,
+         }
+@@ -343,7 +346,25 @@ class Controller:
+                 return {}
+             if not self.feedback_ok(now) or not self.power_ok(now):
+                 raise ValueError("反馈或电压不可用")
+-            if self.task or self.board is not None or self.pending or self.motion:
++            if action == "policy-step":
++                if self.task or self.board is not None or self.pending or self.motion:
++                    raise ValueError("请先完成其他操作")
++                angles = data.get("angles")
++                if not isinstance(angles, list) or len(angles) != 6:
++                    raise ValueError("策略需要六轴目标")
++                actual = self.positions()
++                goal = [kinematics.position_for_angle(i, a) for i, a in enumerate(angles)]
++                if max(abs(a - b) for a, b in zip(actual, goal)) > 55:
++                    raise ValueError("策略单步目标距离实测位置不能超过 55 编码器单位")
++                kinematics.check_path(actual, goal, kinematics.joint_limits(actual))
++                if self.policy_stream is None:
++                    self.policy_stream = {"progress": actual[:], "progress_at": [now] * 6,
++                                          "sampled_feedback": None, "command": None,
++                                          "torque_ready_at": None, "params_sent": False}
++                self.policy_stream.update(goal=goal, expires=now + 0.8)
++                self.message("ACT 连续目标已通过路径检查")
++                return {}
++            if self.task or self.board is not None or self.pending or self.motion or self.policy_stream:
+                 raise ValueError("请等待当前操作完成，或按停止")
+             self.limits = kinematics.joint_limits(self.positions())
+             if action == "move-target":
+@@ -376,7 +397,8 @@ class Controller:
+                 for i, value in enumerate(angles):
+                     if value is not None:
+                         target[i] = kinematics.position_for_angle(i, value)
+-                self.begin_motion(target, 0, "关节运动")
++                tolerance = integer(data.get("completion_tolerance_ticks", 5), 5, 12, "到位容差")
++                self.begin_motion(target, 0, "关节运动", tolerance_ticks=tolerance)
+                 self.message("关节路径检查通过，开始运动")
+                 return {}
+             if action == "torque":
+@@ -589,7 +611,7 @@ class Controller:
+         largest = max(remaining)
+         settled = not self.velocity or max(map(abs, self.velocity)) <= 3.0
+         tcp_error = math.dist(kinematics.tcp(actual), xyz) if xyz is not None and final else None
+-        reached = largest <= 5 if tcp_error is None else tcp_error <= 3.0 and largest <= 12
++        reached = largest <= motion["tolerance_ticks"] if tcp_error is None else tcp_error <= 3.0 and largest <= 12
+         if final and reached and (motion["command"] is None or (motion["command"] == goal and settled)):
+             if motion["command"] is not None and largest > 5:
+                 self.transmit(link, bridge_move(actual))
+@@ -623,6 +645,9 @@ class Controller:
+             return
+         if motion["torque_ready_at"] is None:
+             if any(value is not True for value in self.torque):
++                # Reset any stale servo goal before re-enabling torque after reset.
++                self.transmit(link, packet(BRIDGE_PARAMS, struct.pack("<BH", 75, 165)))
++                self.transmit(link, bridge_move(actual))
+                 self.transmit(link, packet(BRIDGE_TORQUE, b"\x01"))
+                 self.torque[:] = [True] * 6
+                 motion["torque_ready_at"] = now + 0.05
+@@ -687,6 +712,60 @@ class Controller:
+         self.in_flight_until = now + 0.25
+         self.moving.update(i + 1 for i, (a, b) in enumerate(zip(actual, command)) if a != b)
+ 
++    def tick_policy(self, link, now):
++        stream = self.policy_stream
++        if now >= stream["expires"]:
++            self.stop(now, True, "ACT 目标流中断，已停止")
++            return
++        if stream["sampled_feedback"] == self.last_feedback:
++            return
++        if self.bridge_started is None:
++            self.transmit(link, packet(BRIDGE_MODE, b"\x01"))
++            self.bridge_started = now
++            self.bridge_reference = self.feedback[:]
++            return
++        if not self.bridge_ready:
++            return
++        actual, goal = self.positions(), stream["goal"]
++        bounds = kinematics.joint_limits(actual)
++        # A retreat target can become outward after a few ticks of overshoot.
++        # Hold at the fresh boundary instead of commanding back outside it.
++        goal = [max(lo, min(hi, p)) for p, (lo, hi) in zip(goal, bounds)]
++        stream["goal"] = goal
++        if not stream["params_sent"]:
++            self.transmit(link, packet(BRIDGE_PARAMS, struct.pack("<BH", 75, 165)))
++            stream["params_sent"] = True
++        if stream["torque_ready_at"] is None:
++            if any(value is not True for value in self.torque):
++                self.transmit(link, bridge_move(actual))
++                self.transmit(link, packet(BRIDGE_TORQUE, b"\x01"))
++                self.torque[:] = [True] * 6
++                stream["torque_ready_at"] = now + 0.05
++                return
++            stream["torque_ready_at"] = now
++        if now < stream["torque_ready_at"]:
++            return
++        stream["sampled_feedback"] = self.last_feedback
++        for i, (measured, target) in enumerate(zip(actual, goal)):
++            if abs(measured - stream["progress"][i]) >= 3:
++                stream["progress"][i] = measured
++                stream["progress_at"][i] = now
++            if abs(target - measured) > 55:
++                self.stop(now, True, f"ACT J{i + 1} 跟踪偏差超过 55，已停止")
++                return
++            if abs(target - measured) > 12 and now - stream["progress_at"][i] > 1.45:
++                self.stop(now, True, f"ACT J{i + 1} 编码器无进展，已停止")
++                return
++        try:
++            kinematics.check_path(actual, goal, kinematics.joint_limits(actual))
++        except ValueError as error:
++            self.stop(now, True, f"ACT 实测路径检查失败：{error}")
++            return
++        if goal != stream["command"]:
++            self.transmit(link, bridge_move(goal))
++            stream["command"] = goal[:]
++            self.moving.update(i + 1 for i, (a, b) in enumerate(zip(actual, goal)) if a != b)
++
+     def tick(self, link, now):
+         if self.board_stop_pending:
+             self.transmit(link, packet(GROUP_STOP))
+@@ -712,6 +791,9 @@ class Controller:
+                     self.torque[device - 1] = torque
+         if self.pending or self.owner is None:
+             return
++        if self.policy_stream:
++            self.tick_policy(link, now)
++            return
+         if self.motion:
+             self.tick_motion(link, now)
+             return
+diff --git a/tests/test_motion.py b/tests/test_motion.py
+index eabc752..ec31e21 100644
+--- a/tests/test_motion.py
++++ b/tests/test_motion.py
+@@ -74,6 +74,37 @@ class MotionTest(unittest.TestCase):
+         first = plant.sent[:8]
+         self.assertLess(max(b[0] - a[0] for a, b in zip(first, first[1:])), 0.26)
+ 
++    def test_explicit_joint_tolerance_accepts_measured_servo_deadband(self):
++        for tolerance, succeeds in ((5, False), (10, True)):
++            controller, plant, now = self.controller()
++            goal = self.start.copy()
++            goal[2] += 20
++            controller.begin_motion(goal, 0, "测试容差", tolerance_ticks=tolerance)
++            for index in range(1, 80):
++                tick = now + index * 0.085
++                plant.now = tick
++                # Measured elbow deadband: the encoder settles nine ticks short.
++                error = plant.command[2] - plant.positions[2]
++                plant.positions[2] += max(-6, min(6, error - 9)) if error > 9 else 0
++                controller.update_feedback([(p, 0) for p in plant.positions], tick)
++                controller.tick_motion(plant, tick)
++                if controller.motion is None:
++                    break
++            self.assertIsNone(controller.motion)
++            self.assertEqual("完成" in controller.result, succeeds)
++            if succeeds:
++                self.assertEqual(goal[2] - plant.positions[2], 9)
++
++    def test_unknown_torque_holds_feedback_before_enabling_motion(self):
++        controller, plant, now = self.controller()
++        controller.torque[:] = [None] * 6
++        goal = self.start.copy()
++        goal[2] += 80
++        controller.begin_motion(goal, 0, "上电准备")
++        self.run_motion(controller, plant, now)
++        self.assertEqual(plant.sent[0][1], self.start)
++        self.assertIn("完成", controller.result)
++
+     def test_stalled_joint_does_not_report_success(self):
+         controller, plant, now = self.controller(stalled=2)
+         goal = self.start.copy()
+diff --git a/tests/test_policy_stream.py b/tests/test_policy_stream.py
+new file mode 100644
+index 0000000..f13f104
+--- /dev/null
++++ b/tests/test_policy_stream.py
+@@ -0,0 +1,95 @@
++"""Exercise the policy stream against a simulated servo plant, never serial hardware."""
++
++import time
++import unittest
++from unittest.mock import patch
++
++from nexarm import kinematics
++from nexarm.server import Controller
++from test_motion import Plant
++
++
++class PolicyStreamTests(unittest.TestCase):
++    start = [2044, 2210, 1829, 1592, 2053, 1806]
++
++    def setup_controller(self, stalled=None):
++        controller = Controller(None)
++        controller.port = "test"
++        controller.bridge_started = True
++        controller.bridge_ready = True
++        controller.torque[:] = [True] * 6
++        controller.voltage = 12
++        now = time.monotonic()
++        controller.owner = "policy-test"
++        controller.lease_end = now + 10
++        plant = Plant(self.start, stalled)
++        plant.update(controller, now)
++        return controller, plant, now
++
++    def send(self, controller, goal, now):
++        with patch("nexarm.server.time.monotonic", return_value=now):
++            controller.act("policy-step", "policy-test", {
++                "angles": [kinematics.angle(i, p) for i, p in enumerate(goal)]})
++
++    def test_targets_can_update_before_previous_target_settles(self):
++        controller, plant, now = self.setup_controller()
++        for index in range(1, 9):
++            tick = now + index * 0.085
++            plant.update(controller, tick)
++            goal = plant.positions.copy()
++            goal[2] += 20
++            self.send(controller, goal, tick)
++            controller.tick_policy(plant, tick)
++        self.assertIsNotNone(controller.policy_stream)
++        self.assertIsNone(controller.motion)
++        self.assertGreater(plant.positions[2], self.start[2] + 20)
++        self.assertGreater(len(plant.sent), 5)
++
++    def test_stalled_axis_stops_even_when_new_targets_keep_arriving(self):
++        controller, plant, now = self.setup_controller(stalled=2)
++        for index in range(1, 30):
++            tick = now + index * 0.085
++            plant.update(controller, tick)
++            goal = plant.positions.copy()
++            goal[2] += 20
++            self.send(controller, goal, tick)
++            controller.tick_policy(plant, tick)
++            if controller.policy_stream is None:
++                break
++        self.assertIsNone(controller.policy_stream)
++        self.assertIsNone(controller.owner)
++        self.assertIn("J3 编码器无进展", controller.result)
++
++    def test_interrupted_policy_stream_stops_without_next_request(self):
++        controller, plant, now = self.setup_controller()
++        goal = self.start.copy()
++        goal[2] += 20
++        self.send(controller, goal, now)
++        controller.tick_policy(plant, now + 0.81)
++        self.assertIsNone(controller.policy_stream)
++        self.assertIn("目标流中断", controller.result)
++
++    def test_outside_limit_retreat_does_not_reverse_after_overshoot(self):
++        controller, plant, now = self.setup_controller()
++        plant.positions[1] = 3050
++        plant.update(controller, now + 0.01)
++        goal = plant.positions.copy()
++        goal[1] = 3030
++        self.send(controller, goal, now + 0.01)
++        # A fresh encoder sample passes the retreat goal while still outside the soft bound.
++        plant.positions[1] = 3027
++        plant.now = now + 0.10
++        controller.update_feedback([(p, 0) for p in plant.positions], now + 0.10)
++        controller.tick_policy(plant, now + 0.10)
++        self.assertIsNotNone(controller.policy_stream)
++        self.assertEqual(controller.policy_stream["goal"][1], 3027)
++        self.assertEqual(plant.sent[-1][1][1], 3027)
++
++    def test_far_target_is_rejected_before_motion(self):
++        controller, plant, now = self.setup_controller()
++        goal = self.start.copy()
++        goal[2] += 80
++        with self.assertRaisesRegex(ValueError, "55"):
++            self.send(controller, goal, now)
++        self.assertIsNone(controller.policy_stream)
++        self.assertFalse(plant.sent)
