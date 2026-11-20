@@ -61,6 +61,9 @@ def main(argv=None):
     rollout.add_argument("--device", default="cpu")
     rollout.add_argument("--execute", action="store_true")
     rollout.add_argument("--stop-file", default="STOP")
+    rollout.add_argument(
+        "--preview-dir", help="Write live images and JSON for the read-only preview page"
+    )
     trials = commands.add_parser("trials", help="Summarize real robot trials")
     trials.add_argument("csv")
     public = commands.add_parser("import-public", help="Import a local native LeRobot dataset")
@@ -124,6 +127,7 @@ def main(argv=None):
                 args.device,
                 args.execute,
                 args.stop_file,
+                args.preview_dir,
             )
         else:
             from .evaluate import summarize_trials

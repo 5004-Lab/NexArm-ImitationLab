@@ -223,6 +223,29 @@ make smoke
 
 以上命令使用公开数据进行离线训练/推理，不驱动机械臂。本机自采 ZIP 的 `action` 目前为空；真实数据采集完成后的转换和机器人操作见后续章节。
 
+## 实时预测演示（已部署）
+
+机器人服务器上的只读页面：**[NexArm 实时预测](http://10.206.95.245:8788)**。电脑需能访问机器人服务器所在网络。
+
+当前部署的是公开数据训练的 BC-MLP：机器人端 `data/models/public_pick/bc_mlp`。模型读取当前腕部 RGB 和原生编码器反馈；页面显示现场第三人称图像、实际模型输入、当前编码器值、预测目标及差值。预测输出不会发送给机械臂。本次启动约运行 1 小时，暂停后页面保留最后一帧并提示已暂停。
+
+在机器人服务器可单独执行 100 帧实时影子推理：
+
+```bash
+cd /home/ztl/NexArm-ImitationLab
+.venv/bin/python -m imitation_lab rollout \
+  --checkpoint data/models/public_pick/bc_mlp --device cpu --steps 100 \
+  --preview-dir outputs/live_preview --output outputs/live_preview/predictions.jsonl
+```
+
+页面由该服务器的静态 HTTP 服务提供；推理文件在 `outputs/live_preview/`，推理进程日志是 `outputs/live-preview.log`。当前演示停止命令只停止预测，不涉及机器人运动：
+
+```bash
+touch /home/ztl/NexArm-ImitationLab/outputs/live_preview/STOP
+```
+
+公开数据任务名只有 `nexarm pick`，未说明“桌面螺丝刀放进绿色罐子”的成功条件。单张腕部图像能看到细长物体，但不能据此确认完整任务。现有模型是下一个动作预测器，不是物体识别/自动规划器；本次演示用于观察它面对当前桌面时的预测，尚不能据此判断能抓取螺丝刀。
+
 ## 服务器与环境
 
 | 内容 | 位置 |

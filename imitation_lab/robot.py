@@ -97,25 +97,40 @@ class MotionLimits:
 
 
 def rollout(
-    checkpoint, url, joints_path, output, steps=100, device="cpu", execute=False, stop_file="STOP"
+    checkpoint,
+    url,
+    joints_path,
+    output,
+    steps=100,
+    device="cpu",
+    execute=False,
+    stop_file="STOP",
+    preview_dir=None,
 ):
     import torch
 
     from .evaluate import load_policy
 
     spec_path = Path(checkpoint) / "dataset_spec.json"
-    if (
+    native = (
         spec_path.exists()
         and json.loads(spec_path.read_text()).get("robot_profile") == "source_native"
-    ):
+    )
+    if native and execute:
         raise ValueError(
-            "public dataset uses native servo coordinates; calibrate and map before console rollout"
+            "native encoder model is available in shadow mode; console execution needs calibrated action mapping"
         )
+    torch.set_num_threads(min(4, torch.get_num_threads()))
     policy, pre, post = load_policy(checkpoint, device)
     console = Console(url, json.loads(Path(joints_path).read_text()))
     limits = MotionLimits(console.joints)
     path = Path(output)
     path.parent.mkdir(parents=True, exist_ok=True)
+    preview = None
+    if preview_dir:
+        from .preview import LivePreview
+
+        preview = LivePreview(preview_dir)
     if execute:
         console.start()
     try:
@@ -128,19 +143,39 @@ def rollout(
                 if not state["connected"]:
                     raise RuntimeError("robot feedback unavailable")
                 vector = console.vector(state)
-                observation = {"observation.state": torch.from_numpy(vector)}
+                native_state = np.asarray([v[0] for v in state["feedback"]], dtype=np.float32)
+                observation = {
+                    "observation.state": torch.from_numpy(native_state if native else vector)
+                }
+                input_images = {}
                 for name, feature in policy.config.image_features.items():
                     camera = name.rsplit(".", 1)[-1]
                     _, h, w = feature.shape
+                    input_images[camera] = console.image(camera, (w, h))
                     observation[name] = (
-                        torch.from_numpy(console.image(camera, (w, h)).copy())
-                        .permute(2, 0, 1)
-                        .float()
-                        / 255
+                        torch.from_numpy(input_images[camera].copy()).permute(2, 0, 1).float() / 255
                     )
                 with torch.no_grad():
                     prediction = post(policy.select_action(pre(observation))).cpu().numpy()[0]
-                action = limits.apply(prediction, vector)
+                predicted_console = prediction
+                if native:
+                    predicted_console = np.asarray(
+                        [
+                            math.degrees((prediction[j] - v["zero"]) * v["sign"] / v["ticks"])
+                            for j, v in enumerate(console.joints[:5])
+                        ]
+                        + [
+                            float(
+                                np.clip(
+                                    (console.joints[-1]["max"] - prediction[-1])
+                                    / (console.joints[-1]["max"] - console.joints[-1]["min"]),
+                                    0,
+                                    1,
+                                )
+                            )
+                        ]
+                    )
+                action = limits.apply(predicted_console, vector)
                 if execute:
                     console.command("heartbeat")
                     if not state["moving"]:
@@ -149,10 +184,17 @@ def rollout(
                     "step": i,
                     "mode": "execute" if execute else "shadow",
                     "state": vector.tolist(),
-                    "prediction": prediction.tolist(),
+                    "prediction": predicted_console.tolist(),
+                    "state_native": native_state.tolist(),
+                    "prediction_native": prediction.tolist() if native else None,
+                    "timestamp": time.time(),
+                    "prediction_units": "source_native" if native else "degree/open_fraction",
+                    "model": policy.config.type,
                     "limited_action": action.tolist(),
                     "latency_ms": (time.monotonic() - start) * 1000,
                 }
+                if preview:
+                    preview.update(record, input_images, console.image("third", (640, 480)))
                 log.write(json.dumps(record) + "\n")
                 log.flush()
                 time.sleep(max(0, 0.2 - (time.monotonic() - start)))
