@@ -77,6 +77,14 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result["joint_rmse_degree"], 1)
         self.assertEqual(result["gripper_open_closed_accuracy"], 0)
 
+    def test_outside_soft_limit_retreat_has_no_instant_jump(self):
+        joints = [{"min": -180, "max": 180, "zero": 0, "sign": 1, "ticks": 180 / np.pi}] * 6
+        limits = MotionLimits(joints)
+        state = np.array([0, 0, 0, 185.0, 0, 0.0])
+        action = limits.apply(np.zeros(6), state)
+        self.assertLessEqual(float(np.max(np.abs(action[:5] - state[:5]))), 0.4 + 1e-6)
+        self.assertGreater(action[3], 180)
+
     def test_motion_rate(self):
         joints = [{"min": -180, "max": 180, "zero": 0, "sign": 1, "ticks": 180 / np.pi}] * 6
         limits = MotionLimits(joints)

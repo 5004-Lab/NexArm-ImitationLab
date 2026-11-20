@@ -46,7 +46,10 @@ def load_policy(path, device):
 
     config = PreTrainedConfig.from_pretrained(path)
     policy_class = {"act": ACTPolicy, "bc_mlp": BCPolicy, "diffusion": DiffusionPolicy}[config.type]
-    policy = policy_class.from_pretrained(path).to(device)
+    config.device = device
+    if hasattr(config, "pretrained_backbone_weights"):
+        config.pretrained_backbone_weights = None
+    policy = policy_class.from_pretrained(path, config=config).to(device)
     policy.config.device = device
     policy.eval()
     pre, post = make_pre_post_processors(

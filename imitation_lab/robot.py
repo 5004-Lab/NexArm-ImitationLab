@@ -93,7 +93,9 @@ class MotionLimits:
             velocity, self.velocity - self.accel * self.dt, self.velocity + self.accel * self.dt
         )
         self.velocity = velocity
-        return np.clip(state + velocity * self.dt, self.low, self.high)
+        return np.clip(
+            state + velocity * self.dt, np.minimum(self.low, state), np.maximum(self.high, state)
+        )
 
 
 def rollout(
