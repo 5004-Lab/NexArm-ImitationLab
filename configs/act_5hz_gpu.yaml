@@ -1,0 +1,21 @@
+seed: 42
+dataset: data/processed/screwdriver_v1
+output: outputs/act/screwdriver_rgb_gpu_seed42
+device: cuda
+policy:
+  chunk_size: 10
+  n_action_steps: 2
+  vision_backbone: resnet18
+  pretrained_backbone_weights: ResNet18_Weights.IMAGENET1K_V1
+  use_vae: true
+  latent_dim: 32
+  kl_weight: 10.0
+  optimizer_lr: 0.00001
+  optimizer_lr_backbone: 0.00001
+  optimizer_weight_decay: 0.0001
+training:
+  batch_size: 16
+  steps: 20000
+  save_freq: 5000
+  log_freq: 100
+  validation_batches: 20

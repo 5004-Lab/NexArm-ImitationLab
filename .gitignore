@@ -7,3 +7,7 @@ outputs/
 *.egg-info/
 .env*
 *.log
+
+/data
+/outputs
+.ruff_cache/

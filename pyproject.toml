@@ -6,7 +6,17 @@ name = "nexarm-imitation-lab"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.26,<3", "Pillow>=10", "PyYAML>=6"]
+[project.scripts]
+nexarm-il = "imitation_lab.cli:main"
+
 [project.optional-dependencies]
+dev = ["ruff>=0.9"]
 training = ["lerobot==0.4.3", "matplotlib>=3.8"]
 [tool.setuptools.packages.find]
 include = ["imitation_lab*"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["F", "I"]

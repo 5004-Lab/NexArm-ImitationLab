@@ -1,6 +1,18 @@
 # NexArm-ImitationLab
 
-基于真实 NexArm Episode 导出包的 ACT 实验项目。在机器人服务器上独立部署，不修改现有控制台。
+基于真实 NexArm Episode 导出包的 ACT 实验项目。训练部署在 GPU 服务器，采集和执行保留在机器人服务器。
+
+**训练服务器：`wangji@10.206.58.217`**
+
+```bash
+cd /mnt/disk_2T/wangji/projects/NexArm-ImitationLab
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate /usr/local/cuda/envs/nexarm-il
+nexarm-il --help
+bash scripts/train.sh --background --config configs/act_5hz_gpu.yaml
+```
+
+目录、后台运行、断点续训和环境说明见 [训练服务器指南](docs/TRAINING_SERVER.md)。
 
 ## 已实现
 
@@ -22,7 +34,7 @@
 
 ## 安装
 
-服务器目录：`/home/ztl/NexArm-ImitationLab`，独立环境 `.venv`。
+机器人端目录：`/home/ztl/NexArm-ImitationLab`；训练端目录：`/mnt/disk_2T/wangji/projects/NexArm-ImitationLab`。两端均使用独立 `.venv`。
 
 ```sh
 cd /home/ztl/NexArm-ImitationLab
@@ -44,7 +56,7 @@ ARM64 主控如果完整 LeRobot 安装因 `pynput/evdev` 失败，运行 `sh sc
 
 配置默认 CPU，适配当前服务器；正式训练建议有 GPU 的环境。5 Hz 配置为 chunk_size=10、n_action_steps=2、batch_size=16、20,000 步。首次预训练骨干会下载 ResNet18 权重；离线环境可把 pretrained_backbone_weights 设置为 null。
 
-每次训练输出 `resolved_config.json`、`environment.txt`、`loss.csv`、`loss.png`，以及 `checkpoints/<step>/pretrained_model/` 中的 `config.json`、`model.safetensors`、`policy_preprocessor.json`、`policy_postprocessor.json`、`train_config.json`。`last` 指向最后检查点。`training_state.pt` 保存优化器状态，本版没有断点续训 CLI。
+每次训练输出 `resolved_config.json`、`environment.txt`、`loss.csv`、`loss.png`，以及 `checkpoints/<step>/pretrained_model/` 中的 `config.json`、`model.safetensors`、`policy_preprocessor.json`、`policy_postprocessor.json`、`train_config.json`。`last` 指向最后检查点。`training_state.pt` 保存优化器状态，可用 `nexarm-il train --resume <pretrained_model目录> --steps <总步数>` 断点续训。
 
 验证曲线使用推理模式的动作 L1；训练总 Loss 含 KL，两者不是同一个指标。归一化只使用训练集统计。少于三条 Episode 不生成验证/测试集，不报告泛化指标。
 
