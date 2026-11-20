@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+cd "$(dirname "$0")/.."
+PIP=${PIP_PYTHON:-python3}
+$PIP -m pip --python .venv/bin/python install pip 'torch==2.7.1' 'torchvision==0.22.1' 'datasets>=4,<4.2' 'huggingface-hub[cli]>=0.34.2,<0.36' 'accelerate>=1.10,<2' 'diffusers>=0.27,<0.36' 'einops>=0.8,<0.9' 'av>=15,<16' 'jsonlines>=4,<5' 'packaging>=24.2,<26' 'draccus==0.10.0' 'gymnasium>=1.1,<2' 'safetensors>=0.4' 'imageio[ffmpeg]>=2.34,<3' 'termcolor>=2.4,<4' 'deepdiff>=7,<9' 'matplotlib>=3.8' 'wandb>=0.24,<0.25' 'opencv-python-headless>=4.9,<4.13' 'setuptools>=71,<81' 'pyserial>=3.5,<4' 'rerun-sdk>=0.24,<0.27'
+$PIP -m pip --python .venv/bin/python install --no-deps lerobot==0.4.3
