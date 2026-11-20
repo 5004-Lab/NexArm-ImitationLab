@@ -2,6 +2,227 @@
 
 NexArm 数据转换、ACT / BC-MLP / Diffusion Policy 训练与离线推理工程。训练在 GPU 服务器执行，采集与真实机械臂控制留在机器人服务器。
 
+## 常用命令速查（当前服务器可直接运行）
+
+以下为 **Linux Bash** 命令，使用服务器上已经存在的数据和 1,000 步检查点。先登录并初始化当前终端，再按需复制对应代码块。新训练、转换和推理输出都使用时间戳目录，可重复执行。
+
+### 登录与初始化
+
+在自己电脑的终端登录：
+
+```bash
+ssh wangji@10.206.58.217
+```
+
+登录服务器后，每个新终端执行一次：
+
+```bash
+source /home/wangji/miniconda3/etc/profile.d/conda.sh
+conda activate /usr/local/cuda/envs/nexarm-il
+cd /mnt/disk_2T/wangji/projects/NexArm-ImitationLab
+source scripts/env.sh
+```
+
+### 查看命令和 GPU
+
+```bash
+nexarm-il --help
+nexarm-il train --help
+nexarm-il evaluate --help
+nvidia-smi
+python -c 'import sys, torch; print("Python:", sys.executable); print("PyTorch:", torch.__version__); print("GPU:", torch.cuda.get_device_name(0))'
+```
+
+### 查看自采 ZIP 和已有数据划分
+
+```bash
+nexarm-il info data/raw/episode-raw.zip
+python - <<'PY'
+import json
+from pathlib import Path
+info = json.loads(Path('data/processed/public_pick_5hz/dataset.json').read_text())
+print('FPS:', info['fps'])
+print('Axes:', info['axes'])
+print('Units:', info['units'])
+for split, episodes in info['splits'].items():
+    print(split, 'episodes:', len(episodes), 'IDs:', episodes)
+PY
+```
+
+### 重新转换已下载的公共数据
+
+源文件已在服务器上，无需再次下载。此命令转换到一个新目录，并打印其绝对路径；日常训练可继续使用已经验证过的 `data/processed/public_pick_5hz`。
+
+```bash
+DATASET_DIR="data/processed/public_pick_5hz_$(date +%Y%m%d_%H%M%S)_$$"
+nexarm-il import-public \
+  --source data/public/nexarm_pick_20ep \
+  --repo-id dev-lithion/nexarm_pick_20ep \
+  --fps 5 --cameras wrist --output "$DATASET_DIR"
+realpath "$DATASET_DIR"
+```
+
+对已经验证过的转换结果进行源动作、状态与 RGB 对照：
+
+```bash
+python scripts/check_public_conversion.py
+```
+
+### 最快体验：用已有 BC 模型做离线推理
+
+无需重新训练。使用现成的 1,000 步 BC-MLP 检查点，对 150 帧测试数据做预测；输出指标、预测数组与动作对比图。
+
+```bash
+EVAL_DIR="outputs/manual_eval/bc_mlp_$(date +%Y%m%d_%H%M%S)_$$"
+nexarm-il evaluate \
+  --dataset data/processed/public_pick_5hz \
+  --checkpoint outputs/public_pick_1000/bc_mlp/checkpoints/1000/pretrained_model \
+  --split test --device cuda --output "$EVAL_DIR"
+cat "$EVAL_DIR/metrics.json"
+realpath "$EVAL_DIR/actions.png"
+```
+
+### 用三个已有模型分别推理
+
+```bash
+EVAL_ROOT="outputs/manual_eval/all_models_$(date +%Y%m%d_%H%M%S)_$$"
+for MODEL in act bc_mlp diffusion; do
+  nexarm-il evaluate \
+    --dataset data/processed/public_pick_5hz \
+    --checkpoint "outputs/public_pick_1000/$MODEL/checkpoints/1000/pretrained_model" \
+    --split test --device cuda --output "$EVAL_ROOT/$MODEL"
+done
+realpath "$EVAL_ROOT"
+```
+
+### 单独训练 ACT / BC-MLP / Diffusion
+
+以下三个代码块可以任选一个运行，均为 1,000 步前台训练；结束时打印检查点路径。Ctrl+C 可以中断前台训练，恢复时使用最近已保存的检查点。
+
+ACT：
+
+```bash
+RUN_DIR="outputs/manual_train/act_$(date +%Y%m%d_%H%M%S)_$$"
+nexarm-il train --config configs/policy/act.yaml \
+  --dataset data/processed/public_pick_5hz --device cuda --steps 1000 --output "$RUN_DIR"
+```
+
+BC-MLP：
+
+```bash
+RUN_DIR="outputs/manual_train/bc_mlp_$(date +%Y%m%d_%H%M%S)_$$"
+nexarm-il train --config configs/policy/bc_mlp.yaml \
+  --dataset data/processed/public_pick_5hz --device cuda --steps 1000 --output "$RUN_DIR"
+```
+
+Diffusion Policy：
+
+```bash
+RUN_DIR="outputs/manual_train/diffusion_$(date +%Y%m%d_%H%M%S)_$$"
+nexarm-il train --config configs/policy/diffusion.yaml \
+  --dataset data/processed/public_pick_5hz --device cuda --steps 1000 --output "$RUN_DIR"
+```
+
+### 后台训练并查看日志
+
+退出 SSH 后继续训练。后台启动器打印 PID 和日志位置；不要仅为了查看日志而再次启动训练。
+
+```bash
+RUN_DIR="outputs/manual_train/act_background_$(date +%Y%m%d_%H%M%S)_$$"
+bash scripts/train.sh --background --config configs/policy/act.yaml \
+  --dataset data/processed/public_pick_5hz --device cuda --steps 1000 --output "$RUN_DIR"
+```
+
+查看最近一个单模型后台启动任务的日志：
+
+```bash
+LOG_FILE=$(find outputs/launches -maxdepth 1 -name '*.log' -printf '%T@ %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)
+echo "$LOG_FILE"
+tail -n 50 "$LOG_FILE"
+```
+
+持续看日志；Ctrl+C 只退出日志查看，不停止训练：
+
+```bash
+LOG_FILE=$(find outputs/launches -maxdepth 1 -name '*.log' -printf '%T@ %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)
+tail -f "$LOG_FILE"
+```
+
+查看训练进程和 GPU：
+
+```bash
+ps -u "$USER" -o pid,etime,args | grep -E '[i]mitation_lab train|[c]ompare_models.py'
+nvidia-smi
+```
+
+### 直接体验断点续训
+
+为避免修改原有基准结果，先在新目录训练 BC-MLP 2 步，再读取其检查点续训到总计 4 步。下面整个代码块可以直接运行。
+
+```bash
+RESUME_DIR="outputs/resume_demo/bc_mlp_$(date +%Y%m%d_%H%M%S)_$$"
+nexarm-il train --config configs/policy/bc_mlp.yaml --device cuda --steps 2 --output "$RESUME_DIR"
+nexarm-il train --resume "$RESUME_DIR/checkpoints/2/pretrained_model" --device cuda --steps 4
+cat "$RESUME_DIR/loss.csv"
+```
+
+正式续训同样使用 `--resume`，`--steps` 填目标总步数。务必等上一次训练退出后再对同一实验目录续训。
+
+### 三模型快速跑通 / 重新训练对比
+
+每个模型 2 步，用于检查转换数据、模型保存和推理流程：
+
+```bash
+python scripts/compare_models.py --steps 2 \
+  --output "outputs/compare_smoke_$(date +%Y%m%d_%H%M%S)_$$"
+```
+
+每个模型 1,000 步，依次训练并在同一测试集评价：
+
+```bash
+python scripts/compare_models.py --steps 1000 \
+  --output "outputs/compare_1000_$(date +%Y%m%d_%H%M%S)_$$"
+```
+
+只对比 ACT 与 BC-MLP：
+
+```bash
+python scripts/compare_models.py --models act bc_mlp --steps 1000 \
+  --output "outputs/compare_act_bc_$(date +%Y%m%d_%H%M%S)_$$"
+```
+
+### 查看已有对比结果和检查点
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+results = json.loads(Path('outputs/public_pick_1000/comparison.json').read_text())
+print('model\tjoint_RMSE_native\tgripper_MAE_native\tmean_latency_ms')
+for name, values in results.items():
+    print(name, round(values['joint_rmse_source_units'], 3),
+          round(values['gripper_mae_source_units'], 3),
+          round(values['latency_ms']['mean'], 3), sep='\t')
+PY
+ls outputs/public_pick_1000/bc_mlp/checkpoints/1000/pretrained_model
+realpath outputs/public_pick_1000/bc_mlp/test/actions.png
+```
+
+### 运行测试与代码检查
+
+```bash
+make test
+make lint
+```
+
+ACT 的软件夹具训练、保存、恢复与预测测试：
+
+```bash
+make smoke
+```
+
+以上命令使用公开数据进行离线训练/推理，不驱动机械臂。本机自采 ZIP 的 `action` 目前为空；真实数据采集完成后的转换和机器人操作见后续章节。
+
 ## 服务器与环境
 
 | 内容 | 位置 |
@@ -52,7 +273,7 @@ python scripts/check_public_conversion.py
 
 ```bash
 source scripts/env.sh
-python scripts/compare_models.py --steps 2 --output outputs/public_pick_smoke
+python scripts/compare_models.py --steps 2 --output "outputs/public_pick_smoke_$(date +%Y%m%d_%H%M%S)_$$"
 ```
 
 这会依次训练 ACT、BC-MLP、Diffusion Policy，保存并重新加载检查点，在独立测试集逐帧推理，生成每个模型的 `test/metrics.json`、`predictions.npz`、`actions.png`，以及汇总 `comparison.json`。
@@ -60,11 +281,11 @@ python scripts/compare_models.py --steps 2 --output outputs/public_pick_smoke
 ### 3. 小数据训练与对比
 
 ```bash
-python scripts/compare_models.py --steps 1000 --output outputs/public_pick_1000
+python scripts/compare_models.py --steps 1000 --output "outputs/public_pick_1000_$(date +%Y%m%d_%H%M%S)_$$"
 # 单独训练其中一个模型
-nexarm-il train --config configs/policy/bc_mlp.yaml --output outputs/my_bc
-nexarm-il train --config configs/policy/diffusion.yaml --output outputs/my_diffusion
-nexarm-il train --config configs/policy/act.yaml --output outputs/my_act
+nexarm-il train --config configs/policy/bc_mlp.yaml --output "outputs/my_bc_$(date +%Y%m%d_%H%M%S)_$$"
+nexarm-il train --config configs/policy/diffusion.yaml --output "outputs/my_diffusion_$(date +%Y%m%d_%H%M%S)_$$"
+nexarm-il train --config configs/policy/act.yaml --output "outputs/my_act_$(date +%Y%m%d_%H%M%S)_$$"
 ```
 
 同一批数据、同一分组划分、相同图像尺寸、相同种子与训练步数。此公开小数据配置使用 96×96 RGB、batch size 8，骨干不预加载 ImageNet 权重，避免下载条件影响首次验证。1000 步属于流程与初始拟合验证，不等同于充分收敛或论文级对比。
