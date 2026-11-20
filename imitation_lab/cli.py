@@ -63,9 +63,27 @@ def main(argv=None):
     rollout.add_argument("--stop-file", default="STOP")
     trials = commands.add_parser("trials", help="Summarize real robot trials")
     trials.add_argument("csv")
+    public = commands.add_parser("import-public", help="Import a local native LeRobot dataset")
+    public.add_argument("--source", required=True)
+    public.add_argument("--repo-id", required=True)
+    public.add_argument("--output", required=True)
+    public.add_argument("--fps", type=int, default=5)
+    public.add_argument("--cameras", nargs="+", default=["wrist"])
+    public.add_argument("--seed", type=int, default=42)
     args = parser.parse_args(argv)
     try:
-        if args.command == "info":
+        if args.command == "import-public":
+            from .public_data import import_public
+
+            result = import_public(
+                args.source,
+                args.repo_id,
+                args.output,
+                cameras=args.cameras,
+                fps=args.fps,
+                seed=args.seed,
+            )["splits"]
+        elif args.command == "info":
             from .raw import Episode, describe
 
             with Episode(args.episode) as episode:

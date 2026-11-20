@@ -103,6 +103,14 @@ def rollout(
 
     from .evaluate import load_policy
 
+    spec_path = Path(checkpoint) / "dataset_spec.json"
+    if (
+        spec_path.exists()
+        and json.loads(spec_path.read_text()).get("robot_profile") == "source_native"
+    ):
+        raise ValueError(
+            "public dataset uses native servo coordinates; calibrate and map before console rollout"
+        )
     policy, pre, post = load_policy(checkpoint, device)
     console = Console(url, json.loads(Path(joints_path).read_text()))
     limits = MotionLimits(console.joints)

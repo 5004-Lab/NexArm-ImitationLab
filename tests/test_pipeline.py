@@ -68,7 +68,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_episode_splits(self):
         splits = split_ids([str(i) for i in range(50)])
-        self.assertEqual(sorted(map(len, splits.values())), [8, 8, 34])
+        self.assertEqual(sorted(map(len, splits.values())), [7, 8, 35])
         self.assertFalse(set(splits["train"]) & set(splits["test"]))
         self.assertEqual(splits, split_ids([str(i) for i in range(50)]))
 

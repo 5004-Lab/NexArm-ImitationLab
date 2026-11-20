@@ -14,21 +14,33 @@ def split_ids(ids, seed=42):
     random.Random(seed).shuffle(ids)
     if len(ids) < 3:
         return {"train": ids, "val": [], "test": []}
-    nv = max(1, round(len(ids) * 0.15))
-    nt = max(1, round(len(ids) * 0.15))
-    return {"train": ids[: -nv - nt], "val": ids[-nv - nt : -nt], "test": ids[-nt:]}
+    ntrain = max(1, min(len(ids) - 2, int(len(ids) * 0.70)))
+    nv = max(1, int(len(ids) * 0.15))
+    return {"train": ids[:ntrain], "val": ids[ntrain : ntrain + nv], "test": ids[ntrain + nv :]}
 
 
-def clips(rows, min_frames=10):
+def clips(rows, min_frames=10, fps=None, excluded=()):
     runs = []
     run = []
     for i, row in enumerate(rows):
+        if row["frame_index"] in excluded:
+            if len(run) >= min_frames:
+                runs.append(run)
+            run = []
+            continue
         if row.get("action") is None or row.get("observation.state") is None:
             if len(run) >= min_frames:
                 runs.append(run)
             run = []
             continue
-        if run and row["frame_index"] != rows[run[-1]]["frame_index"] + 1:
+        for key in ("observation.state", "action"):
+            values = np.asarray(row[key], dtype=float)
+            if values.shape != (6,) or not np.isfinite(values).all():
+                raise ValueError(f"frame {row['frame_index']}: invalid {key}")
+        if run and (
+            row["frame_index"] != rows[run[-1]]["frame_index"] + 1
+            or (fps and abs(row["timestamp"] - rows[run[-1]]["timestamp"] - 1 / fps) > 0.001)
+        ):
             if len(run) >= min_frames:
                 runs.append(run)
             run = []
@@ -46,6 +58,8 @@ def convert(
     seed=42,
     image_size=(320, 240),
     min_frames=10,
+    max_age_ms=100,
+    max_span_ms=45,
 ):
     sources = {}
     metadata = {}
@@ -57,11 +71,40 @@ def convert(
                 raise ValueError("same episode supplied twice: " + eid)
             if ep.manifest["axes"] != ["J1", "J2", "J3", "J4", "J5", "gripper"]:
                 raise ValueError("this NexArm uses J1..J5 and gripper")
-            runs[eid] = clips(ep.rows, min_frames)
+            if ep.manifest["units"] != ["degree"] * 5 + ["open_fraction"]:
+                raise ValueError("console export units must be degree / open_fraction")
+            excluded = {
+                i
+                for segment in ep.segments
+                if segment["kind"] == "exclude"
+                for i in range(segment["first"], segment["last"] + 1)
+            }
+            for row in ep.rows:
+                offsets = row.get("sync_ms")
+                if offsets is not None:
+                    keys = ["feedback", *cameras]
+                    if any(k not in offsets for k in keys):
+                        excluded.add(row["frame_index"])
+                        continue
+                    values = [offsets[k] for k in keys]
+                    if (
+                        any(not np.isfinite(v) or v > 0.01 or abs(v) > max_age_ms for v in values)
+                        or max(values) - min(values) > max_span_ms
+                        or set(keys) & set(row.get("repeated", []))
+                    ):
+                        excluded.add(row["frame_index"])
+            runs[eid] = clips(ep.rows, min_frames, ep.manifest["fps"], excluded)
             if not runs[eid]:
                 raise ValueError(
                     f"{eid}: no usable action/state clips; this export has no command labels"
                 )
+            if any(
+                not 0 <= ep.rows[i][k][-1] <= 1
+                for run in runs[eid]
+                for i in run
+                for k in ("action", "observation.state")
+            ):
+                raise ValueError("gripper must use open_fraction in [0,1]")
             sources[eid] = Path(path)
             metadata[eid] = ep.manifest
     fps = next(iter(metadata.values()))["fps"]
@@ -94,6 +137,7 @@ def convert(
         "episodes": metadata,
         "clips": {},
         "action_source": "recorded_command",
+        "robot_profile": "nexarm_console",
     }
     for split, ids in splits.items():
         if not ids:
@@ -115,6 +159,7 @@ def convert(
                             {
                                 "source_episode": eid,
                                 "source_frames": [ep.rows[i]["frame_index"] for i in run],
+                                "source_timestamps": [ep.rows[i]["timestamp"] for i in run],
                             }
                         )
                         for i in run:

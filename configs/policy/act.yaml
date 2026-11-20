@@ -1,0 +1,22 @@
+seed: 42
+dataset: data/processed/public_pick_5hz
+output: outputs/public_pick/act
+device: cuda
+policy:
+  type: act
+  chunk_size: 16
+  n_action_steps: 2
+  vision_backbone: resnet18
+  pretrained_backbone_weights: null
+  use_vae: true
+  latent_dim: 32
+  kl_weight: 10.0
+  optimizer_lr: 0.0001
+  optimizer_lr_backbone: 0.0001
+  optimizer_weight_decay: 0.0001
+training:
+  batch_size: 8
+  steps: 1000
+  save_freq: 500
+  log_freq: 100
+  validation_batches: 10

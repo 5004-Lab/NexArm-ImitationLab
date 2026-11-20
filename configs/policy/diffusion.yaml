@@ -1,0 +1,26 @@
+seed: 42
+dataset: data/processed/public_pick_5hz
+output: outputs/public_pick/diffusion
+device: cuda
+policy:
+  type: diffusion
+  n_obs_steps: 1
+  horizon: 16
+  n_action_steps: 2
+  vision_backbone: resnet18
+  pretrained_backbone_weights: null
+  crop_shape: null
+  spatial_softmax_num_keypoints: 16
+  down_dims: [64, 128, 256]
+  noise_scheduler_type: DDIM
+  num_train_timesteps: 100
+  num_inference_steps: 10
+  do_mask_loss_for_padding: true
+  optimizer_lr: 0.0001
+  optimizer_weight_decay: 0.0001
+training:
+  batch_size: 8
+  steps: 1000
+  save_freq: 500
+  log_freq: 100
+  validation_batches: 10

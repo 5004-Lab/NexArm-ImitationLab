@@ -1,6 +1,7 @@
 """Offline action prediction in physical units and trial summaries."""
 
 import csv
+import json
 import time
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import numpy as np
 from .raw import write_json
 
 
-def action_metrics(truth, predictions, latencies=None):
+def action_metrics(truth, predictions, latencies=None, units=None):
     truth = np.asarray(truth)
     predictions = np.asarray(predictions)
     error = predictions - truth
@@ -23,6 +24,10 @@ def action_metrics(truth, predictions, latencies=None):
         ),
         "frames": len(truth),
     }
+    if units and units[-1] != "open_fraction":
+        result["joint_rmse_source_units"] = result.pop("joint_rmse_degree")
+        result["gripper_mae_source_units"] = result.pop("gripper_mae_open_fraction")
+        result.pop("gripper_open_closed_accuracy")
     if latencies is not None:
         result["latency_ms"] = {
             "mean": float(np.mean(latencies)),
@@ -32,10 +37,16 @@ def action_metrics(truth, predictions, latencies=None):
 
 
 def load_policy(path, device):
+    from lerobot.configs.policies import PreTrainedConfig
     from lerobot.policies.act.modeling_act import ACTPolicy
+    from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
     from lerobot.policies.factory import make_pre_post_processors
 
-    policy = ACTPolicy.from_pretrained(path).to(device)
+    from .models import BCPolicy
+
+    config = PreTrainedConfig.from_pretrained(path)
+    policy_class = {"act": ACTPolicy, "bc_mlp": BCPolicy, "diffusion": DiffusionPolicy}[config.type]
+    policy = policy_class.from_pretrained(path).to(device)
     policy.config.device = device
     policy.eval()
     pre, post = make_pre_post_processors(
@@ -69,12 +80,19 @@ def evaluate(root, checkpoint, output, split="test", device="cpu"):
             if device.startswith("cuda"):
                 torch.cuda.synchronize()
             latency.append((time.perf_counter() - start) * 1000)
-            truth.append(item["action"].numpy().reshape(-1, 6)[0])
+            truth.append(
+                item["action"]
+                .numpy()
+                .reshape(-1, policy.config.output_features["action"].shape[0])[0]
+            )
             pred.append(predicted)
             episodes.append(eid)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    metrics = action_metrics(truth, pred, latency)
+    spec = json.loads((Path(root) / "dataset.json").read_text())
+    metrics = action_metrics(truth, pred, latency, spec["units"])
+    metrics["axes"] = spec["axes"]
+    metrics["units"] = spec["units"]
     write_json(output / "metrics.json", metrics)
     np.savez(
         output / "predictions.npz",
@@ -83,11 +101,11 @@ def evaluate(root, checkpoint, output, split="test", device="cpu"):
         episode_index=episodes,
         latency_ms=latency,
     )
-    plot_actions(truth, pred, episodes, output / "actions.png")
+    plot_actions(truth, pred, episodes, output / "actions.png", spec["axes"], spec["units"])
     return metrics
 
 
-def plot_actions(truth, pred, episodes, output):
+def plot_actions(truth, pred, episodes, output, names=None, units=None):
     import matplotlib
 
     matplotlib.use("Agg")
@@ -104,7 +122,9 @@ def plot_actions(truth, pred, episodes, output):
         ax.plot(pred[:, j], label="Predicted", alpha=0.8)
         for x in boundaries:
             ax.axvline(x, color="gray", linestyle=":")
-        ax.set_ylabel(AXES[j] + (" (deg)" if j < 5 else " (open)"))
+        ax.set_ylabel(
+            (names or AXES)[j] + " (" + (units[j] if units else ("deg" if j < 5 else "open")) + ")"
+        )
     axes[0].legend()
     axes[-1].set_xlabel("Frame (dotted lines: episode boundaries)")
     fig.tight_layout()

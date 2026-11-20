@@ -1,3 +1,5 @@
+最新完整操作与模型对比见 [README](../README.md)；公开数据运行结果见 [PUBLIC_BASELINES](PUBLIC_BASELINES.md)。
+
 # GPU 训练服务器
 
 日常训练服务器：`wangji@10.206.58.217`，RTX 5090，Python 3.12，独立 Conda 环境 `/usr/local/cuda/envs/nexarm-il`。
